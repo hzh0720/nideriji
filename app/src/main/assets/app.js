@@ -31,7 +31,8 @@
     readDiaryKeys: {},
     userConfig: null,
     lastSyncText: "还没有同步",
-    lastSyncError: ""
+    lastSyncError: "",
+    lastUiError: ""
   };
 
   var callbacks = {};
@@ -105,23 +106,58 @@
   }
 
   function persistSettings() {
-    localStorage.setItem(STORE_KEY, JSON.stringify({
-      tab: state.tab,
-      token: state.token,
-      meColor: state.meColor,
-      pairedColor: state.pairedColor,
-      draftOwner: state.draftOwner,
-      draftDate: state.draftDate,
-      draftDiaryId: state.draftDiaryId,
-      draftTitle: state.draftTitle,
-      draftHtml: state.draftHtml,
-      draftsByDate: state.draftsByDate,
-      replaceBackup: state.replaceBackup,
-      query: state.query,
-      scope: state.scope,
-      timelineView: state.timelineView,
-      calendarMonth: state.calendarMonth
-    }));
+    try {
+      localStorage.setItem(STORE_KEY, JSON.stringify({
+        tab: state.tab,
+        token: state.token,
+        meColor: state.meColor,
+        pairedColor: state.pairedColor,
+        draftOwner: state.draftOwner,
+        draftDate: state.draftDate,
+        draftDiaryId: state.draftDiaryId,
+        draftTitle: state.draftTitle,
+        draftHtml: draftHtmlForStorage(state.draftHtml),
+        draftsByDate: draftsByDateForStorage(),
+        replaceBackup: state.replaceBackup,
+        lastUiError: state.lastUiError,
+        query: state.query,
+        scope: state.scope,
+        timelineView: state.timelineView,
+        calendarMonth: state.calendarMonth
+      }));
+      return true;
+    } catch (error) {
+      state.lastUiError = "persistSettings · " + compactText(error.message, 180);
+      try {
+        console.warn("[NideRiji Lite storage]", error);
+      } catch (consoleError) {
+        // Ignore console failures in old WebViews.
+      }
+      return false;
+    }
+  }
+
+  function draftsByDateForStorage() {
+    var output = {};
+    Object.keys(state.draftsByDate || {}).forEach(function (key) {
+      var draft = state.draftsByDate[key];
+      if (!draft || typeof draft !== "object") return;
+      output[key] = Object.assign({}, draft, {
+        html: draftHtmlForStorage(draft.html || "")
+      });
+    });
+    return output;
+  }
+
+  function draftHtmlForStorage(html) {
+    if (!html) return "";
+    var box = document.createElement("div");
+    box.innerHTML = sanitizeEditorHtml(html || "");
+    box.querySelectorAll("img").forEach(function (image) {
+      var src = image.getAttribute("src") || "";
+      if (/^data:/i.test(src)) image.removeAttribute("src");
+    });
+    return box.innerHTML;
   }
 
   function persistCache() {
@@ -161,25 +197,26 @@
   function bindTabs() {
     document.querySelectorAll(".tab").forEach(function (button) {
       button.addEventListener("click", function () {
-        setWritingMode(false);
-        if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
-        var shouldRender = true;
-        if (button.dataset.tab === "timeline" && state.tab === "timeline") {
-          var now = Date.now();
-          if (now - lastTimelineTabTap < 420) {
-            state.timelineView = state.timelineView === "calendar" ? "timeline" : "calendar";
-            lastTimelineTabTap = 0;
+        runUiAction("tab:" + (button.dataset.tab || ""), function () {
+          forceExitEditing();
+          var shouldRender = true;
+          if (button.dataset.tab === "timeline" && state.tab === "timeline") {
+            var now = Date.now();
+            if (now - lastTimelineTabTap < 420) {
+              state.timelineView = state.timelineView === "calendar" ? "timeline" : "calendar";
+              lastTimelineTabTap = 0;
+            } else {
+              lastTimelineTabTap = now;
+              shouldRender = false;
+            }
           } else {
-            lastTimelineTabTap = now;
-            shouldRender = false;
+            state.tab = button.dataset.tab;
+            lastTimelineTabTap = button.dataset.tab === "timeline" ? Date.now() : 0;
           }
-        } else {
-          state.tab = button.dataset.tab;
-          lastTimelineTabTap = button.dataset.tab === "timeline" ? Date.now() : 0;
-        }
-        if (!shouldRender) return;
-        persistSettings();
-        render();
+          if (!shouldRender) return;
+          persistSettings();
+          render();
+        });
       });
     });
   }
@@ -205,10 +242,57 @@
       if (!target || !target.closest) return;
       if (target.closest("#editor, #title-input")) return;
       if (target.closest(".tab, [data-date-step], [data-date-option], [data-action='pick-date'], [data-scope], [data-view], [data-calendar-day], [data-diary], [data-profile-action]")) {
-        setWritingMode(false);
-        if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+        forceExitEditing();
       }
     }, true);
+  }
+
+  function runUiAction(name, fn) {
+    try {
+      var result = fn();
+      if (result && typeof result.then === "function") {
+        result.catch(function (error) {
+          handleUiError(name, error);
+        });
+      }
+      return result;
+    } catch (error) {
+      handleUiError(name, error);
+      return null;
+    }
+  }
+
+  function handleUiError(name, error) {
+    var message = compactText((error && error.message) || error || "未知错误", 220);
+    state.lastUiError = (name || "ui") + " · " + message;
+    try {
+      persistSettings();
+    } catch (persistError) {
+      // Keep UI recovery best-effort even if localStorage is unavailable.
+    }
+    try {
+      console.error("[NideRiji Lite UI]", name, error);
+    } catch (consoleError) {
+      // Ignore console failures in old WebViews.
+    }
+    forceExitEditing();
+    toast("操作失败：" + compactText(message, 80));
+  }
+
+  function forceExitEditing() {
+    setWritingMode(false);
+    document.body.classList.remove("is-writing", "has-keyboard");
+    try {
+      if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+    } catch (error) {
+      // Best-effort only.
+    }
+    try {
+      var selection = window.getSelection && window.getSelection();
+      if (selection && selection.removeAllRanges) selection.removeAllRanges();
+    } catch (error) {
+      // Best-effort only.
+    }
   }
 
   function bindViewportMetrics() {
@@ -410,7 +494,7 @@
     var current = view.querySelector("[data-action='pick-date']");
     if (current) {
       current.addEventListener("click", function () {
-        openNativeDatePicker();
+        runUiAction("pick-date", openNativeDatePicker);
       });
     }
   }
@@ -444,18 +528,47 @@
   }
 
   function changeDraftDate(value) {
-    var next = normalizeDateKey(value);
-    if (!next || next === state.draftDate) return;
-    setWritingMode(false);
-    if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
-    syncEditorDraft();
-    state.draftDate = next;
-    loadDraftForDate(next);
-    persistSettings();
-    setTimeout(function () {
+    return runUiAction("change-date:" + value, function () {
+      var next = normalizeDateKey(value);
+      if (!next || next === state.draftDate) return;
+      captureCurrentDraftFromDom();
+      forceExitEditing();
+      state.draftDate = next;
+      loadedDraftDate = "";
+      loadDraftForDate(next);
+      persistSettings();
       renderWrite();
-      setWritingMode(false);
-    }, 0);
+      forceExitEditing();
+    });
+  }
+
+  function captureCurrentDraftFromDom() {
+    normalizeDraftState();
+    var key = state.draftDate;
+    var local = state.draftsByDate && state.draftsByDate[key];
+    var beforeTitle = state.draftTitle || "";
+    var beforeHtml = state.draftHtml || "";
+    var title = document.getElementById("title-input");
+    var editor = document.getElementById("editor");
+    try {
+      if (title) state.draftTitle = title.value || "";
+      if (editor) {
+        updateEditorEmptyState(editor);
+        state.draftHtml = sanitizeEditorHtml(editor.innerHTML || "");
+      }
+      var changed = state.draftTitle !== beforeTitle || state.draftHtml !== beforeHtml;
+      if ((local && (local.dirty || local.cleared)) || changed) {
+        saveCurrentDraft(true);
+      }
+    } catch (error) {
+      state.lastUiError = "captureCurrentDraft · " + compactText(error.message, 180);
+      persistSettings();
+      try {
+        console.warn("[NideRiji Lite draft capture]", error);
+      } catch (consoleError) {
+        // Ignore console failures in old WebViews.
+      }
+    }
   }
 
   function loadDraftForDate(date) {
@@ -472,9 +585,15 @@
     }
     if (diary) {
       state.draftTitle = diary.title || "";
-      state.draftHtml = diary.content
-        ? officialContentToEditorHtml(diary.content, diary.userId)
-        : diaryDisplayHtmlToEditorHtml(diary.html || "", diary.userId);
+      try {
+        state.draftHtml = diary.content
+          ? officialContentToEditorHtml(diary.content, diary.userId)
+          : diaryDisplayHtmlToEditorHtml(diary.html || "", diary.userId);
+      } catch (error) {
+        state.lastUiError = "loadDraftForDate:" + key + " · " + compactText(error.message, 180);
+        state.draftHtml = plainTextToEditorHtml(diary.content || stripHtml(diary.html || ""));
+        toast("这篇日记解析失败，已用纯文本打开");
+      }
       state.draftDiaryId = diary.id ? String(diary.id) : "";
       loadedDraftDate = key;
       return;
@@ -550,6 +669,12 @@
       if (!clean.trim()) return;
       parts.push("<p>" + escapeHtml(clean).replace(/\n/g, "<br>") + "</p>");
     });
+  }
+
+  function plainTextToEditorHtml(text) {
+    var parts = [];
+    appendEditorText(parts, text);
+    return parts.join("");
   }
 
   function editorImageBlockHtml(imageId, userId, src) {
@@ -1287,16 +1412,20 @@
   function bindPageActions() {
     view.querySelectorAll("[data-action]").forEach(function (button) {
       button.addEventListener("click", function () {
-        var action = button.dataset.action;
-        if (action === "sync") syncAll(true);
-        if (action === "save") saveDiary();
-        if (action === "clear-draft") clearDraft();
-        if (action === "preview") previewDraft();
-        if (action === "timeline") {
-          state.tab = "timeline";
-          persistSettings();
-          render();
-        }
+        runUiAction("page-action:" + (button.dataset.action || ""), function () {
+          var action = button.dataset.action;
+          if (action === "sync") return syncAll(true);
+          if (action === "save") return saveDiary();
+          if (action === "clear-draft") return clearDraft();
+          if (action === "preview") return previewDraft();
+          if (action === "timeline") {
+            forceExitEditing();
+            state.tab = "timeline";
+            persistSettings();
+            render();
+          }
+          return null;
+        });
       });
     });
   }
@@ -1581,40 +1710,52 @@
     });
     document.querySelectorAll("[data-scope]").forEach(function (button) {
       button.addEventListener("click", function () {
-        state.scope = button.dataset.scope;
-        persistSettings();
-        renderTimeline();
+        runUiAction("timeline-scope:" + (button.dataset.scope || ""), function () {
+          state.scope = button.dataset.scope;
+          persistSettings();
+          renderTimeline();
+        });
       });
     });
     view.querySelectorAll("[data-view]").forEach(function (button) {
       button.addEventListener("click", function () {
-        state.timelineView = button.dataset.view;
-        persistSettings();
-        renderTimeline();
+        runUiAction("timeline-view:" + (button.dataset.view || ""), function () {
+          state.timelineView = button.dataset.view;
+          persistSettings();
+          renderTimeline();
+        });
       });
     });
     view.querySelectorAll("[data-calendar-step]").forEach(function (button) {
       button.addEventListener("click", function () {
-        state.calendarMonth = shiftMonth(calendarMonthKey(filtered), Number(button.dataset.calendarStep));
-        persistSettings();
-        renderTimeline();
+        runUiAction("calendar-step", function () {
+          state.calendarMonth = shiftMonth(calendarMonthKey(filtered), Number(button.dataset.calendarStep));
+          persistSettings();
+          renderTimeline();
+        });
       });
     });
     view.querySelectorAll("[data-calendar-day]").forEach(function (button) {
       button.addEventListener("click", function () {
-        var items = diariesOnDate(filtered, button.dataset.calendarDay);
-        if (items.length) openDayModal(button.dataset.calendarDay, items);
+        runUiAction("calendar-day:" + (button.dataset.calendarDay || ""), function () {
+          var items = diariesOnDate(filtered, button.dataset.calendarDay);
+          if (items.length) openDayModal(button.dataset.calendarDay, items);
+        });
       });
     });
     view.querySelectorAll("[data-action='sync']").forEach(function (button) {
-      button.addEventListener("click", function () { syncAll(true); });
+      button.addEventListener("click", function () {
+        runUiAction("timeline-sync", function () { return syncAll(true); });
+      });
     });
     view.querySelectorAll("[data-diary]").forEach(function (button) {
       button.addEventListener("click", function () {
-        var diary = state.diaries.find(function (item) {
-          return item.key === button.dataset.diary;
+        runUiAction("open-diary:" + (button.dataset.diary || ""), function () {
+          var diary = state.diaries.find(function (item) {
+            return item.key === button.dataset.diary;
+          });
+          if (diary) openDiaryModal(diary, false);
         });
-        if (diary) openDiaryModal(diary, false);
       });
     });
   }
@@ -1771,8 +1912,10 @@
     });
     root.querySelectorAll("[data-day-diary]").forEach(function (button) {
       button.addEventListener("click", function () {
-        var diary = items.find(function (item) { return item.key === button.dataset.dayDiary; });
-        if (diary) openDiaryModal(diary, false);
+        runUiAction("open-day-diary:" + (button.dataset.dayDiary || ""), function () {
+          var diary = items.find(function (item) { return item.key === button.dataset.dayDiary; });
+          if (diary) openDiaryModal(diary, false);
+        });
       });
     });
   }
@@ -1840,7 +1983,7 @@
       '<div class="profile-grid">',
       '<section class="profile-card profile-head">',
       '<div class="avatar-pair"><div class="avatar" style="background:var(--me)">我</div><div class="avatar" style="background:var(--paired)">TA</div></div>',
-      '<div><h2 class="profile-title">' + escapeHtml(meName) + " / " + escapeHtml(pairedName) + '</h2><p class="profile-desc">' + escapeHtml(state.lastSyncText) + "</p>" + syncErrorHtml() + "</div>",
+      '<div><h2 class="profile-title">' + escapeHtml(meName) + " / " + escapeHtml(pairedName) + '</h2><p class="profile-desc">' + escapeHtml(state.lastSyncText) + "</p>" + syncErrorHtml() + uiErrorHtml() + "</div>",
       "</section>",
       loginCardHtml(),
       colorCardHtml(),
@@ -1866,6 +2009,11 @@
   function syncErrorHtml() {
     if (!state.lastSyncError) return "";
     return '<div class="sync-debug">' + escapeHtml(state.lastSyncError) + "</div>";
+  }
+
+  function uiErrorHtml() {
+    if (!state.lastUiError) return "";
+    return '<div class="sync-debug">最近交互错误：' + escapeHtml(state.lastUiError) + "</div>";
   }
 
   function colorCardHtml() {
@@ -1896,16 +2044,19 @@
 
   function bindProfileEvents() {
     document.querySelectorAll("[data-profile-action]").forEach(function (button) {
-      button.addEventListener("click", async function () {
-        var action = button.dataset.profileAction;
-        if (action === "login") login();
-        if (action === "save-token") saveToken();
-        if (action === "save-colors") saveColors();
-        if (action === "sync") syncAll(true);
-        if (action === "role") swapColors();
-        if (action === "description") toast("签名接口需要下一轮确认字段");
-        if (action === "theme") toast("主题图接口需要下一轮确认字段");
-        if (action === "clear-cache") clearCache();
+      button.addEventListener("click", function () {
+        runUiAction("profile:" + (button.dataset.profileAction || ""), function () {
+          var action = button.dataset.profileAction;
+          if (action === "login") return login();
+          if (action === "save-token") return saveToken();
+          if (action === "save-colors") return saveColors();
+          if (action === "sync") return syncAll(true);
+          if (action === "role") return swapColors();
+          if (action === "description") toast("签名接口需要下一轮确认字段");
+          if (action === "theme") toast("主题图接口需要下一轮确认字段");
+          if (action === "clear-cache") return clearCache();
+          return null;
+        });
       });
     });
     [["me-color", "me-color-text"], ["paired-color", "paired-color-text"]].forEach(function (pair) {
