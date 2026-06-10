@@ -303,14 +303,13 @@ body.has-keyboard .tabbar {
 }
 
 .date-native-input {
-  position: absolute;
-  left: 50%;
-  top: 50%;
-  width: 36px;
-  height: 36px;
+  position: fixed;
+  left: 0;
+  bottom: 0;
+  width: 1px;
+  height: 1px;
   opacity: 0;
-  pointer-events: auto;
-  transform: translate(-50%, -50%);
+  pointer-events: none;
   z-index: -1;
 }
 
@@ -842,6 +841,36 @@ body.has-keyboard .tabbar {
 
 .timeline-row[data-owner="paired"] .timeline-card {
   color: var(--paired);
+}
+
+.timeline-card.is-unread,
+.day-diary-card.is-unread {
+  border-color: rgba(199, 80, 90, 0.5);
+  background: linear-gradient(180deg, rgba(199, 80, 90, 0.09), #fff 64%);
+  box-shadow: 0 12px 30px rgba(199, 80, 90, 0.13);
+}
+
+.timeline-card.is-unread h3,
+.day-diary-card.is-unread strong {
+  font-weight: 850;
+}
+
+.timeline-row[data-unread="true"] .timeline-dot {
+  box-shadow: 0 0 0 2px #fff, 0 0 0 5px rgba(199, 80, 90, 0.22);
+}
+
+.unread-badge {
+  display: inline-flex;
+  align-items: center;
+  width: max-content;
+  min-height: 18px;
+  border-radius: 999px;
+  padding: 0 7px;
+  background: var(--paired);
+  color: #fff;
+  font-size: 10px;
+  line-height: 14px;
+  font-weight: 800;
 }
 
 .timeline-card h3 {

@@ -28,6 +28,7 @@
     sync: null,
     diaries: [],
     images: {},
+    readDiaryKeys: {},
     userConfig: null,
     lastSyncText: "还没有同步",
     lastSyncError: ""
@@ -73,6 +74,7 @@
     bindTabs();
     bindImagePicker();
     bindViewportMetrics();
+    bindGlobalInteractionGuards();
     applyTheme();
     render();
     if (state.token && !state.diaries.length) {
@@ -91,6 +93,7 @@
       state.sync = cache.sync || state.sync;
       state.diaries = Array.isArray(cache.diaries) ? cache.diaries : state.diaries;
       state.images = cache.images || state.images;
+      state.readDiaryKeys = cache.readDiaryKeys || state.readDiaryKeys;
       state.userConfig = cache.userConfig || state.userConfig;
       state.lastSyncText = cache.lastSyncText || state.lastSyncText;
       state.lastSyncError = cache.lastSyncError || state.lastSyncError;
@@ -98,6 +101,7 @@
       // Ignore broken cache.
     }
     normalizeDraftState();
+    seedReadDiaryKeysIfEmpty();
   }
 
   function persistSettings() {
@@ -125,6 +129,7 @@
       sync: state.sync,
       diaries: state.diaries,
       images: state.images,
+      readDiaryKeys: state.readDiaryKeys,
       userConfig: state.userConfig,
       lastSyncText: state.lastSyncText,
       lastSyncError: state.lastSyncError
@@ -136,6 +141,9 @@
     if (!isDateKey(state.draftDate)) state.draftDate = todayStamp();
     if (!state.draftsByDate || typeof state.draftsByDate !== "object" || Array.isArray(state.draftsByDate)) {
       state.draftsByDate = {};
+    }
+    if (!state.readDiaryKeys || typeof state.readDiaryKeys !== "object" || Array.isArray(state.readDiaryKeys)) {
+      state.readDiaryKeys = {};
     }
     if (!state.draftDiaryId) state.draftDiaryId = "";
     if (!state.replaceBackup || typeof state.replaceBackup !== "object") state.replaceBackup = null;
@@ -189,6 +197,18 @@
       insertImageFiles(files);
       imagePicker.value = "";
     });
+  }
+
+  function bindGlobalInteractionGuards() {
+    document.addEventListener("pointerdown", function (event) {
+      var target = event.target;
+      if (!target || !target.closest) return;
+      if (target.closest("#editor, #title-input")) return;
+      if (target.closest(".tab, [data-date-step], [data-date-option], [data-action='pick-date'], [data-scope], [data-view], [data-calendar-day], [data-diary], [data-profile-action]")) {
+        setWritingMode(false);
+        if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+      }
+    }, true);
   }
 
   function bindViewportMetrics() {
@@ -363,7 +383,6 @@
       '<span>' + escapeHtml(weekdayText(center)) + "</span>",
       "</button>",
       '<button class="icon-btn date-step-btn" data-date-step="1" type="button" aria-label="后一天">' + icon("chevronRight") + "</button>",
-      '<input id="draft-date-input" class="date-native-input" type="date" value="' + escapeAttr(state.draftDate) + '">',
       "</div>",
       '<div class="date-strip" aria-label="选择日期">' + days.map(function (date) {
         var day = dateFromKey(date);
@@ -388,22 +407,39 @@
         changeDraftDate(button.dataset.dateOption);
       });
     });
-    var dateInput = document.getElementById("draft-date-input");
     var current = view.querySelector("[data-action='pick-date']");
-    if (dateInput) {
-      dateInput.addEventListener("change", function () {
-        changeDraftDate(dateInput.value);
+    if (current) {
+      current.addEventListener("click", function () {
+        openNativeDatePicker();
       });
     }
-    if (current && dateInput) {
-      current.addEventListener("click", function () {
-        if (dateInput.showPicker) {
-          dateInput.showPicker();
-        } else {
-          dateInput.focus();
-          dateInput.click();
-        }
-      });
+  }
+
+  function openNativeDatePicker() {
+    var dateInput = document.createElement("input");
+    dateInput.type = "date";
+    dateInput.className = "date-native-input";
+    dateInput.value = state.draftDate;
+    document.body.appendChild(dateInput);
+    var done = false;
+    function cleanup() {
+      if (done) return;
+      done = true;
+      setTimeout(function () {
+        if (dateInput.parentNode) dateInput.parentNode.removeChild(dateInput);
+      }, 80);
+    }
+    setTimeout(cleanup, 15000);
+    dateInput.addEventListener("change", function () {
+      var value = dateInput.value;
+      cleanup();
+      changeDraftDate(value);
+    });
+    dateInput.focus();
+    if (dateInput.showPicker) {
+      dateInput.showPicker();
+    } else {
+      dateInput.click();
     }
   }
 
@@ -416,7 +452,10 @@
     state.draftDate = next;
     loadDraftForDate(next);
     persistSettings();
-    renderWrite();
+    setTimeout(function () {
+      renderWrite();
+      setWritingMode(false);
+    }, 0);
   }
 
   function loadDraftForDate(date) {
@@ -1600,6 +1639,7 @@
   }
 
   function timelineItemHtml(item, index) {
+    return timelineItemHtmlV2(item, index);
     var preview = item.text || stripHtml(item.html || "");
     var card = [
       '<button class="timeline-card" type="button" data-diary="' + escapeAttr(item.key) + '">',
@@ -1610,6 +1650,26 @@
     ].join("");
     return [
       '<div class="timeline-row" data-owner="' + item.owner + '" style="animation-delay:' + Math.min(index * 28, 240) + 'ms">',
+      '<div class="timeline-side timeline-left">' + (item.owner === "me" ? card : "") + "</div>",
+      '<div class="timeline-spine"><span class="timeline-dot"></span></div>',
+      '<div class="timeline-side timeline-right">' + (item.owner === "paired" ? card : "") + "</div>",
+      "</div>"
+    ].join("");
+  }
+
+  function timelineItemHtmlV2(item, index) {
+    var preview = item.text || stripHtml(item.html || "");
+    var unread = isUnreadPairedDiary(item);
+    var card = [
+      '<button class="timeline-card' + (unread ? " is-unread" : "") + '" type="button" data-diary="' + escapeAttr(item.key) + '">',
+      '<div class="diary-meta"><span>' + escapeHtml(item.createddate || "") + '</span><span class="owner-badge">' + ownerLabel(item.owner) + "</span></div>",
+      unread ? '<span class="unread-badge">NEW</span>' : "",
+      '<h3>' + escapeHtml(item.title || "未命名") + "</h3>",
+      '<p>' + escapeHtml(preview || "没有文字内容") + "</p>",
+      "</button>"
+    ].join("");
+    return [
+      '<div class="timeline-row" data-owner="' + item.owner + '" data-unread="' + (unread ? "true" : "false") + '" style="animation-delay:' + Math.min(index * 28, 240) + 'ms">',
       '<div class="timeline-side timeline-left">' + (item.owner === "me" ? card : "") + "</div>",
       '<div class="timeline-spine"><span class="timeline-dot"></span></div>',
       '<div class="timeline-side timeline-right">' + (item.owner === "paired" ? card : "") + "</div>",
@@ -1718,6 +1778,7 @@
   }
 
   function dayDiaryHtml(item) {
+    return dayDiaryHtmlV2(item);
     var preview = item.text || stripHtml(item.html || "");
     return [
       '<button class="day-diary-card" data-owner="' + item.owner + '" data-day-diary="' + escapeAttr(item.key) + '" type="button">',
@@ -1726,6 +1787,49 @@
       '<span>' + escapeHtml(preview || "没有文字内容") + "</span>",
       "</button>"
     ].join("");
+  }
+
+  function dayDiaryHtmlV2(item) {
+    var preview = item.text || stripHtml(item.html || "");
+    var unread = isUnreadPairedDiary(item);
+    return [
+      '<button class="day-diary-card' + (unread ? " is-unread" : "") + '" data-owner="' + item.owner + '" data-day-diary="' + escapeAttr(item.key) + '" type="button">',
+      '<span class="owner-badge">' + ownerLabel(item.owner) + "</span>",
+      unread ? '<span class="unread-badge">NEW</span>' : "",
+      '<strong>' + escapeHtml(item.title || "未命名") + "</strong>",
+      '<span>' + escapeHtml(preview || "没有文字内容") + "</span>",
+      "</button>"
+    ].join("");
+  }
+
+  function seedReadDiaryKeysIfEmpty() {
+    if (Object.keys(state.readDiaryKeys || {}).length) return;
+    (state.diaries || []).forEach(function (item) {
+      if (item && item.owner === "paired") {
+        state.readDiaryKeys[item.key] = diaryReadSignature(item);
+      }
+    });
+  }
+
+  function diaryReadSignature(item) {
+    if (!item) return "";
+    return [
+      item.id || item.key || "",
+      dateKey(item.createddate) || item.createddate || "",
+      item.title || "",
+      item.content || item.text || stripHtml(item.html || "")
+    ].join("|");
+  }
+
+  function isUnreadPairedDiary(item) {
+    if (!item || item.owner !== "paired") return false;
+    return state.readDiaryKeys[item.key] !== diaryReadSignature(item);
+  }
+
+  function markDiaryRead(item) {
+    if (!item || item.owner !== "paired") return;
+    state.readDiaryKeys[item.key] = diaryReadSignature(item);
+    persistCache();
   }
 
   function renderProfile() {
@@ -2080,6 +2184,7 @@
   }
 
   function openDiaryModal(item, isPreview) {
+    if (!isPreview) markDiaryRead(item);
     var root = document.getElementById("modal-root");
     root.innerHTML = [
       '<div class="modal-backdrop detail-backdrop">',
@@ -2106,6 +2211,7 @@
 
   function closeModal() {
     document.getElementById("modal-root").innerHTML = "";
+    if (state.tab === "timeline") renderTimeline();
   }
 
   function hydrateDiaryImages(root) {
