@@ -57,11 +57,6 @@ button:disabled {
   grid-template-rows: 1fr var(--tabbar-h);
 }
 
-body.is-writing .app-shell,
-body.has-keyboard .app-shell {
-  grid-template-rows: 1fr 0px;
-}
-
 .view-root {
   min-height: 0;
   overflow: hidden;
@@ -76,9 +71,8 @@ body.has-keyboard .app-shell {
   scroll-padding-bottom: 120px;
 }
 
-body.is-writing .page,
 body.has-keyboard .page {
-  padding-bottom: calc(18px + env(safe-area-inset-bottom));
+  padding-bottom: calc(var(--tabbar-h) + 18px + env(safe-area-inset-bottom));
 }
 
 @keyframes pageIn {
@@ -206,13 +200,7 @@ body.has-keyboard .page {
 
 body.is-writing .tabbar,
 body.has-keyboard .tabbar {
-  height: 0;
-  padding-top: 0;
-  padding-bottom: 0;
-  border-top: 0;
-  opacity: 0;
-  overflow: hidden;
-  pointer-events: none;
+  opacity: 0.92;
 }
 
 .tab {
@@ -316,11 +304,14 @@ body.has-keyboard .tabbar {
 
 .date-native-input {
   position: absolute;
-  inset: auto 50% 0 auto;
-  width: 1px;
-  height: 1px;
+  left: 50%;
+  top: 50%;
+  width: 36px;
+  height: 36px;
   opacity: 0;
-  pointer-events: none;
+  pointer-events: auto;
+  transform: translate(-50%, -50%);
+  z-index: -1;
 }
 
 .date-strip {

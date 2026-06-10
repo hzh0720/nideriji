@@ -153,6 +153,8 @@
   function bindTabs() {
     document.querySelectorAll(".tab").forEach(function (button) {
       button.addEventListener("click", function () {
+        setWritingMode(false);
+        if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
         var shouldRender = true;
         if (button.dataset.tab === "timeline" && state.tab === "timeline") {
           var now = Date.now();
@@ -408,6 +410,8 @@
   function changeDraftDate(value) {
     var next = normalizeDateKey(value);
     if (!next || next === state.draftDate) return;
+    setWritingMode(false);
+    if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
     syncEditorDraft();
     state.draftDate = next;
     loadDraftForDate(next);
