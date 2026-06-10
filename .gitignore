@@ -1,0 +1,9 @@
+/.gradle/
+/build/
+/**/build/
+/apk-inspect/
+/.toolchain/
+/*.apk
+/*.7z
+/*.jks
+/*.keystore

@@ -1,0 +1,17 @@
+plugins {
+    id "com.android.application"
+}
+
+android {
+    namespace "cn.nideriji.lite"
+    compileSdk 33
+
+    defaultConfig {
+        applicationId "cn.nideriji.lite"
+        minSdk 23
+        targetSdk 33
+        versionCode 1
+        versionName "0.1.0"
+    }
+}
+

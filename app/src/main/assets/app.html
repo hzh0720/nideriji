@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light">
+  <title>你的日记 Lite</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <div id="app" class="app-shell">
+    <main id="view" class="view-root" aria-live="polite"></main>
+    <nav class="tabbar" aria-label="主导航">
+      <button class="tab is-active" data-tab="write" type="button" aria-label="写日记">
+        <svg viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+        <span>写</span>
+      </button>
+      <button class="tab" data-tab="timeline" type="button" aria-label="时间线">
+        <svg viewBox="0 0 24 24"><path d="M12 3v18"/><circle cx="12" cy="7" r="2.6"/><circle cx="12" cy="17" r="2.6"/><path d="M5 7h4.4M14.6 17H19"/></svg>
+        <span>时间线</span>
+      </button>
+      <button class="tab" data-tab="profile" type="button" aria-label="个人页">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>
+        <span>个人</span>
+      </button>
+    </nav>
+  </div>
+
+  <div id="modal-root"></div>
+  <input id="image-picker" type="file" accept="image/*" multiple hidden>
+  <script src="app.js"></script>
+</body>
+</html>
+
