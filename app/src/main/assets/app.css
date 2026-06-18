@@ -686,6 +686,22 @@ body.has-keyboard .tabbar {
   box-shadow: 0 0 0 3px rgba(49, 91, 159, 0.13);
 }
 
+.search-deep-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 34px;
+  margin: -4px 0 12px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 17px;
+}
+
+.search-deep-row span {
+  min-width: 0;
+}
+
 .segmented {
   display: grid;
   grid-template-columns: repeat(3, 1fr);

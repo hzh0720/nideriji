@@ -27,6 +27,8 @@
     saving: false,
     sync: null,
     diaries: [],
+    detailLoading: {},
+    deepSearch: null,
     images: {},
     readDiaryKeys: {},
     userConfig: null,
@@ -93,6 +95,7 @@
       var cache = JSON.parse(localStorage.getItem(CACHE_KEY) || "{}");
       state.sync = cache.sync || state.sync;
       state.diaries = Array.isArray(cache.diaries) ? cache.diaries : state.diaries;
+      state.detailLoading = {};
       state.images = cache.images || state.images;
       state.readDiaryKeys = cache.readDiaryKeys || state.readDiaryKeys;
       state.userConfig = cache.userConfig || state.userConfig;
@@ -163,13 +166,33 @@
   function persistCache() {
     localStorage.setItem(CACHE_KEY, JSON.stringify({
       sync: state.sync,
-      diaries: state.diaries,
+      diaries: diariesForCache(),
       images: state.images,
       readDiaryKeys: state.readDiaryKeys,
       userConfig: state.userConfig,
       lastSyncText: state.lastSyncText,
       lastSyncError: state.lastSyncError
     }));
+  }
+
+  function diariesForCache() {
+    var fullBudget = 80;
+    var full = 0;
+    return (state.diaries || []).map(function (item) {
+      var copy = Object.assign({}, item);
+      delete copy.loadingDetail;
+      delete copy.detailError;
+      if (copy.detailLoaded && copy.content && full < fullBudget) {
+        full += 1;
+        return copy;
+      }
+      if (copy.detailLoaded && copy.content) {
+        copy.content = "";
+        copy.html = "";
+        copy.detailLoaded = false;
+      }
+      return copy;
+    });
   }
 
   function normalizeDraftState() {
@@ -585,6 +608,18 @@
     }
     if (diary) {
       state.draftTitle = diary.title || "";
+      if (!diary.detailLoaded) {
+        state.draftHtml = '<p>正在加载这天已有日记...</p>';
+        state.draftDiaryId = diary.id ? String(diary.id) : "";
+        loadedDraftDate = key;
+        ensureDiaryDetail(diary, { renderWrite: true }).catch(function (error) {
+          state.lastUiError = "loadDraftDetail:" + key + " · " + compactText(error.message, 180);
+          state.draftHtml = '<p>这天已有日记，但全文加载失败。请稍后重试，避免覆盖旧内容。</p>';
+          loadedDraftDate = "";
+          if (state.tab === "write" && state.draftDate === key) renderWrite();
+        });
+        return;
+      }
       try {
         state.draftHtml = diary.content
           ? officialContentToEditorHtml(diary.content, diary.userId)
@@ -1689,6 +1724,7 @@
       '<input class="search-input" id="search" type="search" placeholder="搜索双方全文" value="' + escapeAttr(state.query) + '">',
       '<button class="ghost-btn" data-action="sync" type="button">' + icon("refresh") + "<span>同步</span></button>",
       "</div>",
+      deepSearchHtml(filtered),
       '<div class="timeline-control-row">',
       '<div class="segmented">',
       scopeButton("both", "双方"),
@@ -1705,9 +1741,16 @@
     ].join("");
     view.querySelector("#search").addEventListener("input", function (event) {
       state.query = event.target.value;
+      state.deepSearch = null;
       persistSettings();
       renderTimeline();
     });
+    var deepButton = view.querySelector("[data-action='deep-search']");
+    if (deepButton) {
+      deepButton.addEventListener("click", function () {
+        runUiAction("deep-search", function () { return deepSearchCurrentQuery(); });
+      });
+    }
     document.querySelectorAll("[data-scope]").forEach(function (button) {
       button.addEventListener("click", function () {
         runUiAction("timeline-scope:" + (button.dataset.scope || ""), function () {
@@ -1773,9 +1816,78 @@
     return state.diaries.filter(function (item) {
       if (state.scope !== "both" && item.owner !== state.scope) return false;
       if (!query) return true;
-      return [item.title, item.text, item.createddate, item.weekday].join("\n").toLowerCase().indexOf(query) !== -1;
+      return [item.title, item.text, item.content, item.createddate, item.weekday].join("\n").toLowerCase().indexOf(query) !== -1;
     }).sort(function (a, b) {
       return String(b.createddate || "").localeCompare(String(a.createddate || ""));
+    });
+  }
+
+  function deepSearchHtml(filtered) {
+    var query = state.query.trim();
+    if (!query) return "";
+    var loaded = state.diaries.filter(function (item) { return item.detailLoaded; }).length;
+    var total = state.diaries.length;
+    var deep = state.deepSearch;
+    if (deep && deep.query === query && deep.running) {
+      return '<div class="search-deep-row"><span>全文搜索中 ' + deep.done + "/" + deep.total + " · 已命中 " + deep.matches + '</span></div>';
+    }
+    if (deep && deep.query === query && deep.done) {
+      return [
+        '<div class="search-deep-row">',
+        '<span>已深度搜索 ' + deep.done + "/" + deep.total + " · 命中 " + deep.matches + "</span>",
+        deep.done < deep.total ? '<button class="chip-btn" data-action="deep-search" type="button">继续全文搜索</button>' : "",
+        "</div>"
+      ].join("");
+    }
+    return [
+      '<div class="search-deep-row">',
+      '<span>已搜列表和已缓存全文 ' + loaded + "/" + total + " 篇 · 当前显示 " + filtered.length + " 条</span>",
+      '<button class="chip-btn" data-action="deep-search" type="button">深度全文搜索</button>',
+      "</div>"
+    ].join("");
+  }
+
+  async function deepSearchCurrentQuery() {
+    var query = state.query.trim().toLowerCase();
+    if (!query || !state.token) return;
+    var candidates = state.diaries.filter(function (item) {
+      if (state.scope !== "both" && item.owner !== state.scope) return false;
+      return !item.detailLoaded;
+    });
+    var progress = {
+      query: state.query.trim(),
+      running: true,
+      done: 0,
+      total: candidates.length,
+      matches: filteredDiaries().length
+    };
+    state.deepSearch = progress;
+    renderTimeline();
+    for (var i = 0; i < candidates.length; i += 1) {
+      if (state.query.trim().toLowerCase() !== query) break;
+      try {
+        await ensureDiaryDetail(candidates[i], { silent: true });
+      } catch (error) {
+        // Keep scanning; one broken diary should not stop full-text search.
+      }
+      progress.done = i + 1;
+      progress.matches = filteredDiaries().length;
+      if (i % 10 === 0 || i === candidates.length - 1) {
+        persistCache();
+        if (state.tab === "timeline") renderTimeline();
+        await nextFrame();
+      }
+    }
+    progress.running = false;
+    progress.matches = filteredDiaries().length;
+    state.deepSearch = progress;
+    persistCache();
+    if (state.tab === "timeline") renderTimeline();
+  }
+
+  function nextFrame() {
+    return new Promise(function (resolve) {
+      setTimeout(resolve, 0);
     });
   }
 
@@ -1806,7 +1918,7 @@
       '<div class="diary-meta"><span>' + escapeHtml(item.createddate || "") + '</span><span class="owner-badge">' + ownerLabel(item.owner) + "</span></div>",
       unread ? '<span class="unread-badge">NEW</span>' : "",
       '<h3>' + escapeHtml(item.title || "未命名") + "</h3>",
-      '<p>' + escapeHtml(preview || "没有文字内容") + "</p>",
+      '<p>' + escapeHtml(preview || (item.detailLoaded ? "没有文字内容" : "点开加载全文")) + "</p>",
       "</button>"
     ].join("");
     return [
@@ -1940,7 +2052,7 @@
       '<span class="owner-badge">' + ownerLabel(item.owner) + "</span>",
       unread ? '<span class="unread-badge">NEW</span>' : "",
       '<strong>' + escapeHtml(item.title || "未命名") + "</strong>",
-      '<span>' + escapeHtml(preview || "没有文字内容") + "</span>",
+      '<span>' + escapeHtml(preview || (item.detailLoaded ? "没有文字内容" : "点开加载全文")) + "</span>",
       "</button>"
     ].join("");
   }
@@ -1959,8 +2071,7 @@
     return [
       item.id || item.key || "",
       dateKey(item.createddate) || item.createddate || "",
-      item.title || "",
-      item.content || item.text || stripHtml(item.html || "")
+      item.title || ""
     ].join("|");
   }
 
@@ -2153,16 +2264,13 @@
       state.userConfig = sync.user_config || null;
       indexImages(sync);
       var rows = collectOverview(sync);
+      var previous = detailsByKey();
       state.diaries = rows.map(function (item) {
-        return normalizeDiary(item, item.overview || {});
+        return normalizeDiary(item, item.overview || {}, false);
       });
-      state.lastSyncText = "已拿到列表 " + rows.length + " 篇，正在加载全文...";
-      persistCache();
-      if (state.tab === "timeline" || state.tab === "profile") render();
-      var details = await fetchDetails(rows);
-      state.diaries = details.length ? details : state.diaries;
+      mergeCachedDetails(previous);
       loadedDraftDate = "";
-      state.lastSyncText = "已同步 " + details.length + " 篇 · " + timeText(new Date());
+      state.lastSyncText = "已同步列表 " + rows.length + " 篇 · " + timeText(new Date());
       persistCache();
       if (showToast) toast("同步完成");
       render();
@@ -2201,39 +2309,111 @@
     state.images = map;
   }
 
-  async function fetchDetails(rows) {
-    var result = new Array(rows.length);
-    var cursor = 0;
-    var workerCount = Math.min(5, rows.length);
-    async function worker() {
-      while (cursor < rows.length) {
-        var index = cursor;
-        cursor += 1;
-        result[index] = await fetchOneDetail(rows[index]);
+  function detailsByKey() {
+    var map = {};
+    (state.diaries || []).forEach(function (item) {
+      if (item && item.key && item.detailLoaded && item.content) {
+        map[item.key] = item;
       }
-    }
-    var workers = [];
-    for (var i = 0; i < workerCount; i += 1) {
-      workers.push(worker());
-    }
-    await Promise.all(workers);
-    return result.filter(Boolean);
+    });
+    return map;
+  }
+
+  function mergeCachedDetails(previous) {
+    state.diaries = state.diaries.map(function (item) {
+      var cached = previous[item.key];
+      if (!cached) return item;
+      return mergeDiaryDetail(item, cached);
+    });
   }
 
   async function fetchOneDetail(item) {
     try {
-      var data = await postApi("/api/diary/all_by_ids/" + encodeURIComponent(item.userId) + "/", {
-        diary_ids: item.id
-      }, true);
+      var data = await fetchDiaryDetailPayload(item);
       var diary = data.diaries && data.diaries[0];
-      if (diary) return normalizeDiary(item, diary);
+      if (diary) return normalizeDiary(item, diary, true);
     } catch (error) {
     }
-    return normalizeDiary(item, item.overview || {});
+    return normalizeDiary(item, item.overview || {}, false);
   }
 
-  function normalizeDiary(item, diary) {
-    return normalizeDiaryV2(item, diary);
+  function fetchDiaryDetailPayload(item) {
+    return postApi("/api/diary/all_by_ids/" + encodeURIComponent(item.userId) + "/", {
+      diary_ids: item.id
+    }, true);
+  }
+
+  function findDiaryByKey(key) {
+    return state.diaries.find(function (item) { return item.key === key; }) || null;
+  }
+
+  async function ensureDiaryDetail(item, options) {
+    options = options || {};
+    if (!item || item.detailLoaded) return item;
+    var key = item.key;
+    if (state.detailLoading[key]) return state.detailLoading[key];
+    if (item.loadingDetail) return item;
+    item.loadingDetail = true;
+    var promise = fetchOneDetail(item).then(function (detail) {
+      if (!detail || !detail.detailLoaded) {
+        throw new Error("全文接口没有返回正文");
+      }
+      var current = findDiaryByKey(key) || item;
+      var merged = mergeDiaryDetail(current, detail);
+      replaceDiaryInState(merged);
+      persistCache();
+      return merged;
+    }).catch(function (error) {
+      item.detailError = compactText(error.message, 180);
+      replaceDiaryInState(item);
+      persistCache();
+      throw error;
+    }).finally(function () {
+      var current = findDiaryByKey(key);
+      if (current) current.loadingDetail = false;
+      delete state.detailLoading[key];
+      if (options.silent) return;
+      if (options.renderWrite && state.tab === "write") {
+        loadedDraftDate = "";
+        renderWrite();
+      }
+      if (options.refreshModal && document.querySelector("[data-detail-key='" + cssEscape(key) + "']")) {
+        var latest = findDiaryByKey(key);
+        if (latest && latest.detailLoaded) openDiaryModal(latest, false);
+      } else if (state.tab === "timeline") {
+        renderTimeline();
+      }
+    });
+    state.detailLoading[key] = promise;
+    return promise;
+  }
+
+  function replaceDiaryInState(next) {
+    var index = state.diaries.findIndex(function (item) { return item.key === next.key; });
+    if (index >= 0) {
+      state.diaries[index] = next;
+    } else {
+      state.diaries.push(next);
+    }
+  }
+
+  function mergeDiaryDetail(base, detail) {
+    if (!detail || !detail.detailLoaded) return base;
+    return Object.assign({}, base, {
+      title: detail.title || base.title,
+      createddate: detail.createddate || base.createddate,
+      weekday: detail.weekday || base.weekday,
+      content: detail.content || base.content || "",
+      text: detail.text || base.text || "",
+      html: detail.html || base.html || "",
+      detailLoaded: true,
+      loadingDetail: false,
+      detailError: ""
+    });
+  }
+
+  function normalizeDiary(item, diary, isDetail) {
+    return normalizeDiaryV2(item, diary, isDetail);
     var content = cleanUnicode(diary.content || "");
     return {
       key: item.owner + ":" + item.id,
@@ -2249,8 +2429,13 @@
     };
   }
 
-  function normalizeDiaryV2(item, diary) {
-    var content = cleanUnicode(diary.content || "");
+  function normalizeDiaryV2(item, diary, isDetail) {
+    var content = isDetail ? cleanUnicode(diary.content || "") : "";
+    var hasDetail = !!(isDetail && content);
+    var preview = cleanUnicode(diary.preview || diary.summary || diary.abstract || diary.text || diary.content_preview || (!isDetail ? diary.content || "" : ""));
+    if (!preview && !hasDetail) {
+      preview = cleanUnicode(diary.title || item.overview.title || "");
+    }
     return {
       key: item.owner + ":" + item.id,
       id: diary.id || item.id,
@@ -2261,8 +2446,11 @@
       createddate: diary.createddate || item.overview.createddate || "",
       weekday: diary.weekday || item.overview.weekday || "",
       content: content,
-      text: content.replace(IMAGE_TOKEN_RE, "[图片]"),
-      html: officialContentToHtml(content, item.userId)
+      text: (hasDetail ? content : preview).replace(IMAGE_TOKEN_RE, "[图片]"),
+      html: hasDetail ? officialContentToHtml(content, item.userId) : "",
+      detailLoaded: hasDetail,
+      loadingDetail: false,
+      detailError: ""
     };
   }
 
@@ -2336,10 +2524,15 @@
 
   function openDiaryModal(item, isPreview) {
     if (!isPreview) markDiaryRead(item);
+    var bodyHtml = isPreview
+      ? item.html
+      : item.detailLoaded
+        ? item.html
+        : detailLoadingHtml(item);
     var root = document.getElementById("modal-root");
     root.innerHTML = [
       '<div class="modal-backdrop detail-backdrop">',
-      '<article class="modal detail-sheet detail-full">',
+      '<article class="modal detail-sheet detail-full" data-detail-key="' + escapeAttr(item.key || "") + '">',
       '<header class="detail-hero" data-owner="' + item.owner + '">',
       '<div class="detail-title-row">',
       "<div>",
@@ -2349,7 +2542,7 @@
       '<button class="icon-btn" data-close type="button" aria-label="关闭">' + icon("close") + "</button>",
       "</div>",
       "</header>",
-      '<div class="diary-body">' + (isPreview ? item.html : item.html || "") + "</div>",
+      '<div class="diary-body">' + (bodyHtml || "") + "</div>",
       "</article>",
       "</div>"
     ].join("");
@@ -2358,6 +2551,30 @@
       if (event.target.classList.contains("modal-backdrop")) closeModal();
     });
     hydrateDiaryImages(root);
+    if (!isPreview && !item.detailLoaded) {
+      ensureDiaryDetail(item, { refreshModal: true }).catch(function (error) {
+        var body = root.querySelector(".diary-body");
+        if (body) {
+          body.innerHTML = detailErrorHtml(item, error);
+        }
+      });
+    }
+  }
+
+  function detailLoadingHtml(item) {
+    var preview = item.text || stripHtml(item.html || "");
+    return [
+      preview ? "<p>" + escapeHtml(preview) + "</p>" : "",
+      '<div class="loading-state detail-loading">正在加载全文...</div>'
+    ].join("");
+  }
+
+  function detailErrorHtml(item, error) {
+    var preview = item.text || stripHtml(item.html || "");
+    return [
+      preview ? "<p>" + escapeHtml(preview) + "</p>" : "",
+      '<div class="sync-debug">全文加载失败：' + escapeHtml(compactText(error && error.message, 160)) + "</div>"
+    ].join("");
   }
 
   function closeModal() {
